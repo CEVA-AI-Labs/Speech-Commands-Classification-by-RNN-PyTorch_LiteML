@@ -34,7 +34,7 @@ def set_default_args():
 
     # training params
     args.num_epochs = 100
-    args.learning_rate = 0.0001
+    args.learning_rate = 0.00001
     args.learning_rate_decay_interval = 5 # decay for every 5 epochs
     args.learning_rate_decay_rate = 0.5 # lr = lr * rate
     args.weight_decay = 0.00
@@ -58,7 +58,7 @@ def set_default_args():
     # log setting
     args.plot_accu = True # if true, plot accuracy for every epoch
     args.show_plotted_accu = False # if false, not calling plt.show(), so drawing figure in background
-    args.save_model_to = 'checkpoints/' # Save model and log file
+    args.save_model_to = 'checkpoints_RNN/' # Save model and log file
         #e.g: model_001.ckpt, log.txt, log.jpg
     
     return args 
@@ -85,7 +85,7 @@ def load_weights(model, weights, PRINT=False):
         else:
             model_state[name].copy_(param)
         
-def create_RNN_model(args, load_weights_from=None):
+def create_RNN_model(args, load_weights_from=None, bidirectional = False):
     ''' A wrapper for creating a 'class RNN' instance '''
     
     
@@ -96,35 +96,45 @@ def create_RNN_model(args, load_weights_from=None):
     
     # Create model
     device = args.device
-    model = RNN(args.input_size, args.hidden_size, args.num_layers, args.num_classes, device).to(device)
-    
+    model = RNN(args.input_size, args.hidden_size, args.num_layers, args.num_classes, device, bidirectional=bidirectional).to(device)
+
     # Load weights
+    #load_weights_from = False
     if load_weights_from:
+        model = torch.nn.DataParallel(model)
         print(f"Load weights from: {load_weights_from}")
         weights = torch.load(load_weights_from)
         load_weights(model, weights)
+        model = model.module
     
     return model
 
 # Recurrent neural network (many-to-one)
 class RNN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes, device, classes=None):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, device, classes=None, bidirectional = False):
         super(RNN, self).__init__()
+        self.GRU = True
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, num_classes)
+        self.lstm = nn.GRU(input_size, hidden_size, num_layers, batch_first=True, bidirectional = bidirectional )
+        self.fc = nn.Linear(hidden_size*(2 if bidirectional else 1), num_classes)
         self.device = device
         self.classes = classes
+        self.bidirectional = bidirectional
+
 
     def forward(self, x):
         # Set initial hidden and cell states
-        batch_size = x.size(0)
-        h0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device) 
-        c0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device) 
+        batch_size = 1#x.size(0)
+        directions = 2 if self.bidirectional else 1
+        h0 = torch.zeros(self.num_layers*directions, batch_size, self.hidden_size).to(self.device)
+        c0 = torch.zeros(self.num_layers*directions, batch_size, self.hidden_size).to(self.device)
         
         # Forward propagate LSTM
-        out, _ = self.lstm(x, (h0, c0))  # shape = (batch_size, seq_length, hidden_size)
+        if self.GRU:
+            out, _ = self.lstm(x, h0)  # shape = (batch_size, seq_length, hidden_size)
+        else:
+            out, _ = self.lstm(x, (h0, c0))  # shape = (batch_size, seq_length, hidden_size)
         
         # Decode the hidden state of the last time step
         out = self.fc(out[:, -1, :])
@@ -157,12 +167,16 @@ class RNN(nn.Module):
         idx = self.predict(x)
         return idx
     
-def evaluate_model(model, eval_loader, num_to_eval=-1):
+def evaluate_model(model, eval_loader, num_to_eval=-1, writer = None, epoch = 0):
     ''' Eval model on a dataset '''
-    device = model.device
+    device = "cuda"#model.module.device
+    from tqdm import tqdm
+
     correct = 0
     total = 0
-    for i, (featuress, labels) in enumerate(eval_loader):
+    for i, (featuress, labels) in enumerate(tqdm(eval_loader)):
+        if 1%10 ==0:
+            print("eval iteration: {}, accuracy: {}".format( correct / total))
 
         featuress = featuress.to(device) # (batch, seq_len, input_size)
         labels = labels.to(device)
@@ -179,7 +193,10 @@ def evaluate_model(model, eval_loader, num_to_eval=-1):
             break
     eval_accu = correct / total
     print('  Evaluate on eval or test dataset with {} samples: Accuracy = {}%'.format(
-        i+1, 100 * eval_accu)) 
+        i+1, 100 * eval_accu))
+
+
+    writer.add_scalar('Eval/Accuracy', eval_accu, epoch)
     return eval_accu
 
 def fix_weights_except_fc(model):
@@ -192,9 +209,9 @@ def fix_weights_except_fc(model):
             param.requires_grad = False
     print("")
 
-def train_model(model, args, train_loader, eval_loader):
+def train_model(model, args, train_loader, eval_loader, writer):
 
-    device = model.device
+    device = "cuda"# model.device
     logger = lib_ml.TrainingLog(training_args=args)
     if args.finetune_model:
         fix_weights_except_fc(model)
@@ -218,6 +235,7 @@ def train_model(model, args, train_loader, eval_loader):
     total_step = len(train_loader)
     curr_lr = args.learning_rate
     cnt_batches = 0
+    model = model.train()
     for epoch in range(1, 1+args.num_epochs):
         cnt_correct, cnt_total = 0, 0
         for i, (featuress, labels) in enumerate(train_loader):
@@ -263,7 +281,7 @@ def train_model(model, args, train_loader, eval_loader):
     
         # -- Evaluate and save model
         if (epoch) % 1 == 0 or (epoch) == args.num_epochs:
-            eval_accu = evaluate_model(model, eval_loader, num_to_eval=-1)
+            eval_accu = evaluate_model(model, eval_loader, num_to_eval=-1, writer = writer, epoch = epoch)
             if args.save_model_to:
                 name_to_save = args.save_model_to + "/" + "{:03d}".format(epoch) + ".ckpt"
                 torch.save(model.state_dict(), name_to_save)
@@ -347,7 +365,7 @@ def test_model_on_a_random_dataset():
     test_loader = copy.deepcopy(train_loader)
 
     # Create model
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cudaF.is_available() else 'cpu')
     model = create_RNN_model(args, device)
 
     # Train model on training set
