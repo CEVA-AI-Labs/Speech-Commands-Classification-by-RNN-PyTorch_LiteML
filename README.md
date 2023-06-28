@@ -1,3 +1,16 @@
+# Speech Commands Classification LITEML
+
+For retraining we use pretrained, bidirectional rnns with 3 layers.
+
+To run the retraining run: python ./src/s1_pretrain_on_kaggle.py
+
+To change model type (GRU/LSTM), set args.model  in s1_pretrain_on_kaggle.py script.
+
+|      | pretrained float    | PTQ 8 bit | after retraining | retraining epochs |
+|------|---------------------|-----------|------------------|-------------------|
+| GRU  | 93.3962 (25 epochs) | 81.6      | 86.8             | 4                 |
+| LSTM | 83.4  (2 epochs)    | 71.88     | 84.22            | 3                 | 
+
 # Speech Commands Classification
 Abstract: Classification of 11 types of audio clips using MFCCs features and LSTM. Pretrained on Speech Command Dataset with intensive data augmentation.   
 
