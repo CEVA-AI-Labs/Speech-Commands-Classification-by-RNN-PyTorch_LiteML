@@ -2,13 +2,13 @@ if 1: # Set path
     import sys, os
     ROOT = os.path.dirname(os.path.abspath(__file__))+"/../" # root of the project
     sys.path.append(ROOT)
-    
-import numpy as np 
+
+import numpy as np
 import time
 import types
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 
-import torch 
+import torch
 import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
@@ -23,14 +23,14 @@ if 1: # my lib
     import utils.lib_ml as lib_ml
 
 def set_default_args():
-    
+
     args = types.SimpleNamespace()
 
     # model params
     args.input_size = 12  # == n_mfcc
     args.batch_size = 1
     args.hidden_size = 64
-    args.num_layers = 3
+    args.num_layers  = 3
 
     # training params
     args.num_epochs = 100
@@ -39,64 +39,65 @@ def set_default_args():
     args.learning_rate_decay_rate = 0.5 # lr = lr * rate
     args.weight_decay = 0.00
     args.gradient_accumulations = 16 # number of gradient accums before step
-    
+
     # training params2
     args.load_weights_from = None
     args.finetune_model = False # If true, fix all parameters except the fc layer
     args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     # data
     args.data_folder = "data/data_train/"
     args.train_eval_test_ratio=[0.9, 0.1, 0.0]
     args.do_data_augment = False
 
     # labels
-    args.classes_txt = "config/classes.names" 
+    args.classes_txt = "config/classes.names"
     args.num_classes = None # should be added with a value somewhere, like this:
     #                = len(lib_io.read_list(args.classes_txt))
 
     # log setting
     args.plot_accu = True # if true, plot accuracy for every epoch
     args.show_plotted_accu = False # if false, not calling plt.show(), so drawing figure in background
-    args.save_model_to = 'checkpoints_RNN/' # Save model and log file
+    args.save_model_to = 'checkpoints/' # Save model and log file
         #e.g: model_001.ckpt, log.txt, log.jpg
-    
-    return args 
+
+    return args
 
 def load_weights(model, weights, PRINT=False):
     # Load weights into model.
     # If param's name is different, raise error.
     # If param's size is different, skip this param.
     # see: https://discuss.pytorch.org/t/how-to-load-part-of-pre-trained-model/1113/2
-    
+
     for i, (name, param) in enumerate(weights.items()):
         model_state = model.state_dict()
-        
+
         if name not in model_state:
             print("-"*80)
-            print("weights name:", name) 
-            print("RNN states names:", model_state.keys()) 
+            print("weights name:", name)
+            print("RNN states names:", model_state.keys())
             assert 0, "Wrong weights file"
-            
+
         model_shape = model_state[name].shape
         if model_shape != param.shape:
             print(f"\nWarning: Size of {name} layer is different between model and weights. Not copy parameters.")
             print(f"\tModel shape = {model_shape}, weights' shape = {param.shape}.")
         else:
             model_state[name].copy_(param)
-        
+
 def create_RNN_model(args, load_weights_from=None, bidirectional = False):
     ''' A wrapper for creating a 'class RNN' instance '''
-    
-    
+
+
     # Update some dependent args
     args.num_classes = len(lib_io.read_list(args.classes_txt)) # read from "config/classes.names"
     args.save_log_to = args.save_model_to + "log.txt"
     args.save_fig_to = args.save_model_to + "fig.jpg"
-    
+
     # Create model
     device = args.device
-    model = RNN(args.input_size, args.hidden_size, args.num_layers, args.num_classes, device, bidirectional=bidirectional).to(device)
+
+    model = RNN(args.input_size, args.hidden_size, args.num_layers, args.num_classes, device, rnn_type = args.model,bidirectional=bidirectional, batch_size=args.batch_size).to(device)
 
     # Load weights
     #load_weights_from = False
@@ -106,36 +107,39 @@ def create_RNN_model(args, load_weights_from=None, bidirectional = False):
         weights = torch.load(load_weights_from)
         load_weights(model, weights)
         model = model.module
-    
+
     return model
 
 # Recurrent neural network (many-to-one)
 class RNN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes, device, classes=None, bidirectional = False):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, device, classes=None, bidirectional = False, rnn_type = torch.nn.RNN, batch_size=1):
         super(RNN, self).__init__()
-        self.GRU = True
+        self.GRU = False
+        if rnn_type == torch.nn.GRU:
+            self.GRU = True
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.lstm = nn.GRU(input_size, hidden_size, num_layers, batch_first=True, bidirectional = bidirectional )
+        self.lstm = rnn_type(input_size, hidden_size, num_layers, batch_first=True, bidirectional = bidirectional )
         self.fc = nn.Linear(hidden_size*(2 if bidirectional else 1), num_classes)
         self.device = device
         self.classes = classes
         self.bidirectional = bidirectional
+        self.batch_size = batch_size
 
 
     def forward(self, x):
         # Set initial hidden and cell states
-        batch_size = 1#x.size(0)
+        batch_size = self.batch_size#x.size(0)
         directions = 2 if self.bidirectional else 1
         h0 = torch.zeros(self.num_layers*directions, batch_size, self.hidden_size).to(self.device)
         c0 = torch.zeros(self.num_layers*directions, batch_size, self.hidden_size).to(self.device)
-        
+
         # Forward propagate LSTM
         if self.GRU:
             out, _ = self.lstm(x, h0)  # shape = (batch_size, seq_length, hidden_size)
         else:
             out, _ = self.lstm(x, (h0, c0))  # shape = (batch_size, seq_length, hidden_size)
-        
+
         # Decode the hidden state of the last time step
         out = self.fc(out[:, -1, :])
         return out
@@ -151,10 +155,10 @@ class RNN(nn.Module):
         _, predicted = torch.max(outputs.data, 1)
         predicted_index = predicted.item()
         return predicted_index
-    
+
     def set_classes(self, classes):
-        self.classes = classes 
-    
+        self.classes = classes
+
     def predict_audio_label(self, audio):
         idx = self.predict_audio_label_index(audio)
         assert self.classes, "Classes names are not set. Don't know what audio label is"
@@ -166,7 +170,7 @@ class RNN(nn.Module):
         x = audio.mfcc.T # (time_len, feature_dimension)
         idx = self.predict(x)
         return idx
-    
+
 def evaluate_model(model, eval_loader, num_to_eval=-1, writer = None, epoch = 0):
     ''' Eval model on a dataset '''
     device = "cuda"#model.module.device
@@ -210,24 +214,25 @@ def fix_weights_except_fc(model):
     print("")
 
 def train_model(model, args, train_loader, eval_loader, writer):
+    from tqdm import tqdm
 
-    device = "cuda"# model.device
+    device = "cuda"#model.device
     logger = lib_ml.TrainingLog(training_args=args)
     if args.finetune_model:
         fix_weights_except_fc(model)
-        
+
     # -- create folder for saving model
     if args.save_model_to:
         if not os.path.exists(args.save_model_to):
             os.makedirs(args.save_model_to)
-            
+
     # -- Loss and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     optimizer.zero_grad()
 
     # -- For updating learning rate
-    def update_lr(optimizer, lr):    
+    def update_lr(optimizer, lr):
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
@@ -236,9 +241,10 @@ def train_model(model, args, train_loader, eval_loader, writer):
     curr_lr = args.learning_rate
     cnt_batches = 0
     model = model.train()
+    model = torch.nn.DataParallel(model)
     for epoch in range(1, 1+args.num_epochs):
         cnt_correct, cnt_total = 0, 0
-        for i, (featuress, labels) in enumerate(train_loader):
+        for i, (featuress, labels) in enumerate(tqdm(train_loader)):
             cnt_batches += 1
 
             ''' original code of pytorch-tutorial:
@@ -249,11 +255,12 @@ def train_model(model, args, train_loader, eval_loader, writer):
             '''
             featuress = featuress.to(device)
             labels = labels.to(device)
-            
+
             # Forward pass
+
             outputs = model(featuress)
             loss = criterion(outputs, labels)
-            
+
             # Backward and optimize
             loss.backward() # error
             if cnt_batches % args.gradient_accumulations == 0:
@@ -265,20 +272,21 @@ def train_model(model, args, train_loader, eval_loader, writer):
             _, argmax = torch.max(outputs, 1)
             cnt_correct += (labels == argmax.squeeze()).sum().item()
             cnt_total += labels.size(0)
-            
+
             # Print accuracy
             train_accu = cnt_correct/cnt_total
             if (i+1) % 50 == 0 or (i+1) == len(train_loader):
-                print ('Epoch [{}/{}], Step [{}/{}], Loss = {:.4f}, Train accuracy = {:.2f}' 
+                print ('Epoch [{}/{}], Step [{}/{}], Loss = {:.4f}, Train accuracy = {:.2f}'
                     .format(epoch, args.num_epochs, i+1, total_step, loss.item(), 100*train_accu))
+
             continue
         print(f"Epoch {epoch} completes")
-        
+
         # -- Decay learning rate
         if (epoch) % args.learning_rate_decay_interval == 0:
             curr_lr *= args.learning_rate_decay_rate # lr = lr * rate
             update_lr(optimizer, curr_lr)
-    
+
         # -- Evaluate and save model
         if (epoch) % 1 == 0 or (epoch) == args.num_epochs:
             eval_accu = evaluate_model(model, eval_loader, num_to_eval=-1, writer = writer, epoch = epoch)
@@ -290,7 +298,7 @@ def train_model(model, args, train_loader, eval_loader, writer):
             # logger record
             logger.store_accuracy(epoch, train=train_accu, eval=eval_accu)
             logger.save_log(args.save_log_to)
-            
+
             # logger Plot
             if args.plot_accu and epoch == 1:
                 plt.figure(figsize=(10, 8))
@@ -300,16 +308,16 @@ def train_model(model, args, train_loader, eval_loader, writer):
             if (epoch == args.num_epochs) or (args.plot_accu and epoch>1):
                 logger.plot_train_eval_accuracy()
                 if args.show_plotted_accu:
-                    plt.pause(0.01) 
+                    plt.pause(0.01)
                 plt.savefig(fname=args.save_fig_to)
-        
+
         # An epoch end
         print("-"*80 + "\n")
-    
+
     # Training end
     return
-            
-            
+
+
 '''
 # ==========================================================================================
 # == Test 
