@@ -8,7 +8,7 @@ To change model type (GRU/LSTM), set args.model  in s1_pretrain_on_kaggle.py scr
 
 |      | pretrained float    | PTQ 8 bit | after retraining | retraining epochs |
 |------|---------------------|-----------|------------------|-------------------|
-| GRU  | 93.3962 (25 epochs) | 81.6      | 86.8             | 4                 |
+| GRU  | 93.3962 (25 epochs) | 81.6      | 88.15            | 12                |
 | LSTM | 83.4  (2 epochs)    | 71.88     | 84.22            | 3                 | 
 
 # Speech Commands Classification
